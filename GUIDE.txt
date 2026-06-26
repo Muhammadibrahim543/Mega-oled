@@ -1,0 +1,114 @@
+WALKIE-TALKIE RECEIVER — QUICK GUIDE
+=====================================
+
+HARDWARE WIRING (edit Config.h to change pins)
+──────────────────────────────────────────────
+SSD1306 OLED (I2C 128×64)
+  SDA → GPIO 21
+  SCL → GPIO 22
+  VCC → 3.3V
+  GND → GND
+
+INMP441 Microphone (I2S0)
+  SCK  → GPIO 26
+  WS   → GPIO 25
+  SD   → GPIO 34
+  VDD  → 3.3V
+  GND  → GND
+  L/R  → GND  (left channel)
+
+MAX98357A Amplifier (I2S1)
+  BCLK → GPIO 27
+  LRC  → GPIO 25   ← shared with MIC WS (auto-switched in firmware)
+  DIN  → GPIO 33
+  VIN  → 5V
+  GND  → GND
+
+SD Card Module (SPI)
+  SCK  → GPIO 18
+  MISO → GPIO 19
+  MOSI → GPIO 23
+  CS   → GPIO 5
+  VCC  → 3.3V
+  GND  → GND
+
+Buttons (active LOW, wired to GND on press)
+  PREV / PTT → GPIO 13  (internal pull-up enabled)
+  SELECT     → GPIO 12
+  NEXT       → GPIO 14
+
+Optional buzzer (passive) → BUZZER_PIN in Config.h (default off, set -1)
+
+
+REQUIRED ARDUINO LIBRARIES
+────────────────────────────
+Install via Library Manager (Sketch → Include Library → Manage):
+  • Adafruit SSD1306
+  • Adafruit GFX Library
+Board: ESP32 Dev Module (ESP32 Arduino core)
+
+
+SCREEN PAGES
+────────────
+STANDBY   Idle. Shows unread count badge, peer status dot.
+           Hold PREV ≥700ms to start recording.
+           NEXT or SEL → open Inbox.
+
+RECEIVING  Auto-shown when sender transmits a file.
+           Shows filename, progress bar, byte counter.
+           No action needed — fully automatic.
+
+INBOX      List of received WT_MSG_*.pcm files on SD.
+           PREV / NEXT → scroll list.
+           SEL short   → play / stop selected message.
+           SEL long    → send selected file back to sender.
+           PREV long   → back to Standby.
+
+RECORDING  PTT held from Standby or Inbox.
+           Release PREV (or press SEL) → stop & send automatically.
+           Messages shorter than ~0.1s are discarded.
+
+SENDING    Progress bar while transmitting back to sender.
+           Auto-returns to Standby when done or failed.
+
+NOTIFY     Full-screen alert when a new message arrives.
+           Buzzer beeps (if wired). Press ANY button to dismiss.
+
+
+BUTTON REFERENCE
+────────────────
+PREV short     Scroll back in inbox
+PREV long      Back to Standby from Inbox
+PREV hold≥700ms PTT — start recording (from Standby / Inbox)
+PREV release   Stop recording → auto-send
+SEL short      Play/Stop in Inbox; Stop recording in Record page
+SEL long       Send selected inbox file back to sender
+NEXT short     Scroll forward / open Inbox from Standby
+ANY            Dismiss notification
+
+
+PAIRING WITH SENDER
+────────────────────
+No manual pairing needed. The receiver listens on WiFi channel 1
+with AP SSID "TRACKER_ENW". When the sender broadcasts a
+HANDSHAKE packet, both devices exchange MACs automatically.
+Range: ~100m line-of-sight (ESP-NOW).
+
+
+SD CARD FORMAT
+──────────────
+FAT32, any size. The firmware creates /WALKIE/ automatically.
+Received files are stored as: /WALKIE/WT_MSG_0001.pcm
+Local recordings also use the same path/format.
+Audio format: raw PCM, 8000 Hz, 16-bit signed, mono, little-endian.
+To play on PC: import raw audio in Audacity
+  (Rate=8000, Encoding=Signed 16-bit PCM, Channels=1).
+
+
+NOTIFICATION SYSTEM
+────────────────────
+notifyNewMessage() triggers automatically on file receive.
+It activates the full-screen NOTIFY page and fires the buzzer
+(if BUZZER_PIN is set in Config.h).
+The notification stays until any button is pressed.
+The received file is then available in the Inbox.
