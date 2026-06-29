@@ -40,7 +40,7 @@
 #define MIC_PORT        I2S_NUM_0
 // FIX: was 8000 — must match sender LR_SAMPLE_RATE=16000
 #define MIC_SAMPLE_RATE 16000
-#define MIC_GAIN        0.8f   // reduced gain to lower mic noise
+#define MIC_GAIN        1.5f   // set to match GAIN_BOOST in Audio.cpp
 #define MIC_NOISE_GATE  120   // higher threshold for noise gate
 
 // ── MAX98357A Amplifier (I2S_NUM_1) ───────────────────────────

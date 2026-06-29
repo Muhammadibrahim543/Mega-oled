@@ -80,6 +80,27 @@ static int32_t  _lrDcOffset = 0;          // DC bias estimate (IIR)
 static int16_t  _txAccumulator[LR_CHUNK_SAMPLES];
 static uint16_t _txAccumulatorFill = 0;
 
+// DSP state for Live Radio Mic (matching Audio.cpp)
+static float _lrDcBlockX = 0.0f;
+static float _lrDcBlockY = 0.0f;
+static float _lrLpfState = 0.0f;
+static float _lrAudioRms = 0.0f;
+
+static inline float lrApplyDCBlock(float x) {
+    float y = x - _lrDcBlockX + DC_BLOCK_ALPHA * _lrDcBlockY;
+    _lrDcBlockX = x;
+    _lrDcBlockY = y;
+    return y;
+}
+
+static inline float lrApplyLPF(float x) {
+    _lrLpfState = _lrLpfState * (1.0f - LPF_ALPHA) + x * LPF_ALPHA;
+    return _lrLpfState;
+}
+
+static inline void lrUpdateRMS(float x) {
+    _lrAudioRms = _lrAudioRms * RMS_SMOOTHING + fabsf(x) * (1.0f - RMS_SMOOTHING);
+}
 
 // ════════════════════════════════════════════════════════════════
 //  I2S — MICROPHONE  (I2S_NUM_0 / INMP441)
@@ -100,9 +121,8 @@ void lrMicStart() {
     cfg.bits_per_sample      = I2S_BITS_PER_SAMPLE_32BIT;
     cfg.channel_format       = I2S_CHANNEL_FMT_ONLY_LEFT;
     cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
-    cfg.intr_alloc_flags     = ESP_INTR_FLAG_LEVEL1;
-    cfg.dma_buf_count        = 4; // fewer buffers for lower latency
-    cfg.dma_buf_len          = 64; // ~32 ms at 16 kHz, reduces OLED‑redraw interference
+    cfg.dma_buf_count        = 8; // increased to 8 to handle OLED redraw delays
+    cfg.dma_buf_len          = 128; // increased to 128 to handle OLED redraw delays
     cfg.use_apll             = true;
     cfg.tx_desc_auto_clear   = false;
     cfg.fixed_mclk           = 0;
@@ -180,6 +200,11 @@ void lrAmpStop() {
     i2s_stop(AMP_PORT);
     i2s_driver_uninstall(AMP_PORT);
     _ampOpen = false;
+
+    // Pull AMP DIN pin LOW to prevent floating noise/feedback
+    pinMode(AMP_DIN_PIN, OUTPUT);
+    digitalWrite(AMP_DIN_PIN, LOW);
+
     Serial.println("[LR] Amp stopped");
 }
 
@@ -262,6 +287,10 @@ static void _sendPacket(const LR_Packet* pkt) {
 // ════════════════════════════════════════════════════════════════
 
 void lrInit(uint8_t channel) {
+    // Drive AMP DIN pin LOW to prevent startup buzz
+    pinMode(AMP_DIN_PIN, OUTPUT);
+    digitalWrite(AMP_DIN_PIN, LOW);
+
     lrChannel       = channel < LR_CHANNEL_COUNT ? channel : 0;
     lrState         = LR_IDLE;
     lrLastPacketMs  = 0;
@@ -395,27 +424,28 @@ void lrTick() {
             if (samplesRead == 0) continue;
 
             for (int i = 0; i < samplesRead; i++) {
-                // On ESP32-S3, INMP441 MSB lands on bit 31.
-                // Shifting by 16 places the sign bit correctly at bit 15 for int16_t cast.
-                int32_t raw = _txRaw[i] >> 16;
+                float x = (float)(_txRaw[i] >> 13);
+                x = lrApplyDCBlock(x);
+                x = lrApplyLPF(x);
+                lrUpdateRMS(x);
 
-                // DC offset removal (IIR filter)
-                _lrDcOffset = _lrDcOffset - (_lrDcOffset >> 9) + (raw >> 9);
-                raw -= _lrDcOffset;
-
-                // Apply MIC_GAIN (from Config.h)
-                float boosted = (float)raw * MIC_GAIN;
-                if (boosted >  32767.0f) boosted =  32767.0f;
-                if (boosted < -32768.0f) boosted = -32768.0f;
-                int16_t s = (int16_t)boosted;
-
-                // Soft noise gate to prevent background hum/hiss
-                int32_t absS = (s < 0) ? -s : s;
-                if (absS < MIC_NOISE_GATE) {
-                    s = (int16_t)((int32_t)s * absS / MIC_NOISE_GATE);
+                float gateGain;
+                if (_lrAudioRms >= MIC_NOISE_GATE) {
+                    gateGain = MIC_GAIN;
+                } else if (_lrAudioRms <= MIC_NOISE_GATE * 0.25f) {
+                    gateGain = 0.0f;
+                } else {
+                    float ratio = (_lrAudioRms - MIC_NOISE_GATE * 0.25f) / (MIC_NOISE_GATE * 0.75f);
+                    gateGain = MIC_GAIN * ratio;
                 }
-                
-                _txPcm[i] = s;
+
+                float b = x * gateGain;
+                const float KNEE  = 26000.0f;
+                const float RANGE = 32767.0f - KNEE;
+                if      (b >  KNEE) b =  KNEE + RANGE * tanhf((b  - KNEE) / RANGE);
+                else if (b < -KNEE) b = -KNEE - RANGE * tanhf((-b - KNEE) / RANGE);
+
+                _txPcm[i] = (int16_t)b;
             }
             lrLastSample = _txPcm[samplesRead - 1];
 
